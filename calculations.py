@@ -134,6 +134,20 @@ class ShipGame:
     def fire_shot(self, ship_name: str, distance: int, h_angle: float):
         return fire_shot(self.data_set.get_ship(ship_name), distance, h_angle)
 
+    def firing_range(self, ship_name: str):
+        ship = self.data_set.get_ship(ship_name)
+        close = 0
+        far = 100000
+        while far - close > 1:
+            mid = (far - close) // 2 + close
+            try:
+                fire_shot(ship, mid, 0)
+            except OutOfFiringRange:
+                far = mid
+            else:
+                close = mid
+        return close
+
 
 def belt_immune_mag(shoot_ship: data.ShipData, ship: data.ShipData):
     return belt_immune(shoot_ship, ship, shot_belt_dome_mag, MAGAZINE)
@@ -145,18 +159,23 @@ def belt_immune_eng(shoot_ship: data.ShipData, ship: data.ShipData):
 
 def belt_immune(shoot_ship: data.ShipData, ship: data.ShipData, fn, penetrate_code):
     close = 0
-    far = 50000
-    while True:
+    far = 100000
+    while far > 0:
         mid = (far - close) // 2 + close
-        shot1 = fire_shot(shoot_ship, mid, 0)
-        if fn(shot1, ship) == penetrate_code:
-            shot2 = fire_shot(shoot_ship, mid + 1, 0)
-            if fn(shot2, ship) != penetrate_code:
-                return mid + 1
-            else:
-                close = mid
-        else:
+        try:
+            shot1 = fire_shot(shoot_ship, mid, 0)
+        except OutOfFiringRange:
             far = mid
+        else:
+            if fn(shot1, ship) == penetrate_code:
+                shot2 = fire_shot(shoot_ship, mid + 1, 0)
+                if fn(shot2, ship) != penetrate_code:
+                    return mid + 1
+                else:
+                    close = mid
+            else:
+                far = mid
+    return 0
 
 
 def deck_immune_eng(shoot_ship: data.ShipData, ship: data.ShipData):
@@ -169,18 +188,26 @@ def deck_immune_mag(shoot_ship: data.ShipData, ship: data.ShipData):
 
 def deck_immune(shoot_ship: data.ShipData, ship: data.ShipData, fn, penetrate_code):
     close = 0
-    far = 50000
+    far = 100000
     while True:
         mid = (far - close) // 2 + close
-        shot1 = fire_shot(shoot_ship, mid, 0)
-        if fn(shot1, ship) != penetrate_code:
-            shot2 = fire_shot(shoot_ship, mid + 1, 0)
-            if fn(shot2, ship) == penetrate_code:
-                return mid + 1
-            else:
-                close = mid
-        else:
+        try:
+            shot1 = fire_shot(shoot_ship, mid, 0)
+        except OutOfFiringRange:
             far = mid
+        else:
+            if fn(shot1, ship) != penetrate_code:
+                try:
+                    shot2 = fire_shot(shoot_ship, mid + 1, 0)
+                except OutOfFiringRange:
+                    return float('inf')
+
+                if fn(shot2, ship) == penetrate_code:
+                    return mid + 1
+                else:
+                    close = mid
+            else:
+                far = mid
 
 
 def fire_shot(ship: data.ShipData, distance: int, h_angle: float) -> Shot:
@@ -189,9 +216,14 @@ def fire_shot(ship: data.ShipData, distance: int, h_angle: float) -> Shot:
     resist = ship["AP-resist"]
 
     v_reduce_rate = (resist / mass) ** 0.72
-    h_reduced = v_reduce_rate * distance ** 0.93 / 1.76
+    h_reduced = v_reduce_rate * distance ** 0.93 / 1.72
     h_v = init - h_reduced
-    v_v = v_reduce_rate ** 0.5 * distance ** 1.15 / 110
+    v_v = v_reduce_rate ** 0.5 * distance ** 1.15 / 115
+
+    ele = ship["Elevation"]
+    max_ratio = ele * 0.01125
+    if v_v / init > max_ratio:
+        raise OutOfFiringRange()
     velocity = math.sqrt(h_v ** 2 + v_v ** 2)
     # print(h_v, v_v)
     landing_angle = math.degrees(math.atan(v_v / h_v))
@@ -261,3 +293,8 @@ def kilo_to_pounds(kg: float):
 
 def feet_to_meters(ft: float):
     return ft * 0.3048
+
+
+class OutOfFiringRange(Exception):
+    def __init__(self, msg=""):
+        Exception.__init__(self, msg)
