@@ -1,7 +1,6 @@
 import data
 import math
 
-
 # Part codes
 BELT_DOME_ENG = 1
 DECK_ENG = 2
@@ -14,7 +13,7 @@ DECK_MAG = 8
 SKY_WINDOW_MAG = 9
 WATER_BELT_DOME_MAG = 10
 WATER_TDS_MAG = 11
-
+TURRET_SHIELD = 12
 
 # Damage levels
 RICOCHET = 1000
@@ -25,6 +24,7 @@ ENGINE = 1004
 MAGAZINE = 1005
 OVER = 1006
 LIGHT = 1007
+TURRET = 1008
 
 
 class Shot:
@@ -33,8 +33,8 @@ class Shot:
         self.caliber = shell["Caliber"]
         self.ef = shell["AP-ef"]
         self.mass = shell["AP-mass"]
-        self.v_angle = v_angle
-        self.h_angle = h_angle
+        self.v_angle = v_angle  # the angle between projectile and sea level, landing angle
+        self.h_angle = h_angle  # the angle between projectile and ship
         self.velocity = velocity
 
     def penetrate_able(self) -> bool:
@@ -55,6 +55,8 @@ class Ship:
             pass
         elif part == DECK_ENG:
             return shot_deck_eng(shot, self.ship_data)
+        elif part == TURRET_SHIELD:
+            return shot_turret_shield(shot, self.ship_data)
 
 
 def shot_deck_eng(shot: Shot, ship: data.ShipData):
@@ -115,9 +117,20 @@ def shot_belt_dome(shot: Shot, ship: data.ShipData, belt_thickness, dome_thickne
         return RICOCHET
 
 
+def shot_turret_shield(shot: Shot, ship: data.ShipData):
+    hit_angle = abs(ship["Turret-angle"] - shot.v_angle)
+    if pure_penetration(shot, ship["Turret-front"], hit_angle):
+        return TURRET
+    else:
+        return RICOCHET
+
+
 class ShipGame:
     def __init__(self):
         self.data_set = data.DataSet()
+
+    def ship_instance(self, name: str):
+        return Ship(self.data_set.get_ship(name))
 
     def self_immune_zone(self, ship_name: str):
         return self.immune_zone(ship_name, ship_name)
@@ -130,6 +143,14 @@ class ShipGame:
         deck_eng = deck_immune_eng(shoot_ship, ship)
         deck_mag = deck_immune_mag(shoot_ship, ship)
         return {"Engine": (belt_eng, deck_eng), "Magazine": (belt_mag, deck_mag)}
+
+    def self_turret_immune_zone(self, ship_name: str):
+        return self.turret_immune_zone(ship_name, ship_name)
+
+    def turret_immune_zone(self, shoot_ship_name: str, ship_name: str):
+        shoot_ship = self.data_set.get_ship(shoot_ship_name)
+        ship = self.data_set.get_ship(ship_name)
+        return turret_shield_immune(shoot_ship, ship)
 
     def fire_shot(self, ship_name: str, distance: int, h_angle: float):
         return fire_shot(self.data_set.get_ship(ship_name), distance, h_angle)
@@ -147,6 +168,51 @@ class ShipGame:
             else:
                 close = mid
         return close
+
+
+def turret_shield_immune(shoot_ship: data.ShipData, ship: data.ShipData):
+    lst = []
+    try:
+        i = 0
+        while True:
+            shot = fire_shot(shoot_ship, i, 0)
+            if shot_turret_shield(shot, ship) == TURRET:
+                lst.append(True)
+            else:
+                lst.append(False)
+            i += 1
+    except OutOfFiringRange:
+        pass
+
+    return parse_list(lst)
+
+
+def parse_list(lst: list):
+    res = {"Penetrate": [], "Blocked": []}
+    p = False if lst[0] else True  # intentionally inverted
+    current_range = []
+    for i in range(len(lst)):
+        cur = lst[i]
+        if cur:
+            if not p:  # begin of penetration
+                if i != 0:
+                    current_range.append(i - 1)
+                    res["Blocked"].append(current_range)
+                current_range = [i]
+                p = True
+        else:
+            if p:
+                if i != 0:
+                    current_range.append(i - 1)
+                    res["Penetrate"].append(current_range)
+                current_range = [i]
+                p = False
+    current_range.append(len(lst) - 1)
+    if p:
+        res["Penetrate"].append(current_range)
+    else:
+        res["Blocked"].append(current_range)
+    return res
 
 
 def belt_immune_mag(shoot_ship: data.ShipData, ship: data.ShipData):
@@ -231,7 +297,7 @@ def fire_shot(ship: data.ShipData, distance: int, h_angle: float) -> Shot:
     return Shot(distance, velocity, landing_angle, h_angle, ship)
 
 
-def total_angle(landing_angle: float, shooting_angle: float, armor_angle: float) -> float:
+def get_total_angle(landing_angle: float, shooting_angle: float, armor_angle: float) -> float:
     """
     This result may not be correct, but enough.
 
@@ -251,25 +317,30 @@ def total_angle(landing_angle: float, shooting_angle: float, armor_angle: float)
     return deg
 
 
-def velocity_need(shot: Shot, armor_thickness: float, armor_angle: float) -> float:
+def velocity_need(shot: Shot, armor_thickness: float, total_angle: float) -> float:
     """
 
     :param shot:
     :param armor_thickness:
-    :param armor_angle: vertical as 90, horizontal as 0
+    :param total_angle:
     :return:
     """
-    landing_angle = total_angle(shot.v_angle, shot.h_angle, armor_angle)
+    # landing_angle = total_angle(shot.v_angle, shot.h_angle, armor_angle)
     e = mm_to_inches(armor_thickness)
     d = mm_to_inches(shot.caliber)
     m = kilo_to_pounds(shot.mass)
-    coe = 6 * (e/d - 0.45) * (landing_angle ** 2 + 2000) + 40000
-    vl = coe * math.sqrt(e) * d / (41.57 * math.sqrt(m) * math.cos(math.radians(landing_angle)))
+    coe = 6 * (e / d - 0.45) * (total_angle ** 2 + 2000) + 40000
+    vl = coe * math.sqrt(e) * d / (41.57 * math.sqrt(m) * math.cos(math.radians(total_angle)))
     return feet_to_meters(vl)
 
 
 def penetration(shot: Shot, thickness: float, armor_angle: float) -> bool:
-    vn = velocity_need(shot, thickness / shot.ef, armor_angle)
+    total_angle = get_total_angle(shot.v_angle, shot.h_angle, armor_angle)
+    return pure_penetration(shot, thickness, total_angle)
+
+
+def pure_penetration(shot: Shot, thickness: float, total_angle: float) -> bool:
+    vn = velocity_need(shot, thickness / shot.ef, total_angle)
     if vn >= shot.velocity:
         shot.velocity = 0
         return False
